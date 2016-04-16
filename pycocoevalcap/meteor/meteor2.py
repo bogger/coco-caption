@@ -11,7 +11,6 @@ import threading
 # Assumes meteor-1.5.jar is in the same directory as meteor.py.  Change as needed.
 METEOR_JAR = 'meteor-1.5.jar'
 # print METEOR_JAR
-
 class Meteor:
 
     def __init__(self):
@@ -32,15 +31,19 @@ class Meteor:
 
         eval_line = 'EVAL'
         self.lock.acquire()
+	tot_line = 0
         for i in imgIds:
-            assert(len(res[i]) == 1)
-
-            stat = self._stat(res[i][0], gts[i])
-            eval_line += ' ||| {}'.format(stat)
-
+            #assert(len(res[i]) == 1)
+            for res_sent in res[i]:
+                stat = self._stat(res_sent, gts[i])
+                eval_line += ' ||| {}'.format(stat)
+		tot_line += 1
         self.meteor_p.stdin.write('{}\n'.format(eval_line))
         for i in range(0,len(imgIds)):
-            scores.append(float(self.meteor_p.stdout.readline().strip()))
+	  scores_im = []
+	  for j in xrange(len(res[i])):
+            scores_im.append(float(self.meteor_p.stdout.readline().strip()))
+	  scores.append(scores_im)
         score = float(self.meteor_p.stdout.readline().strip())
         self.lock.release()
 
