@@ -3,7 +3,8 @@ from tokenizer.ptbtokenizer import PTBTokenizer
 import itertools
 import numpy as np
 #from bleu.bleu import Bleu
-from meteor.meteor2 import Meteor
+from meteor.meteor2 import Meteor2
+from meteor.meteor import Meteor
 #from rouge.rouge import Rouge
 #from cider.cider import Cider
 #import nltk
@@ -47,29 +48,21 @@ class VgEvalCap:
             if 'caption_tokens' not in gts[imgId][region_id]:
               gts[imgId][region_id]['caption_tokens'] = []
             gts[imgId][region_id]['caption_tokens'].append(tokens)
-        # =================================================
-        # Set up scorers
-        # =================================================
-        print 'setting up scorers...'
-        scorers = [
-           # (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
-            (Meteor(),"METEOR"),
-           # (Rouge(), "ROUGE_L"),
-          #  (Cider(), "CIDEr")
-        ]
+
+        
 
         # =================================================
         # Compute scores
         # =================================================
         #holistic score
         eval = {}
-        for scorer, method in scorers:
-            print 'computing %s score...'%(scorer.method())
-            score, scores = scorer.compute_score(gts_tokens, res_tokens)
-            self.setEval(score, method)
-            self.setImgToEvalImgs(scores, imgIds, method)
-            print "%s: %0.3f"%(method, score)
-        self.setEvalImgs()
+        
+        print 'computing Meteor score...'
+        score, scores = Meteor2().compute_score(gts_tokens, res_tokens)
+        #self.setEval(score, method)
+        #self.setImgToEvalImgs(scores, imgIds, method)
+        print "Meteor: %0.3f"%(score)
+        #self.setEvalImgs()
         #mean ap
         overlap_ratios = [0.3,0.4,0.5,0.6,0.7]
         metoer_score_th = [0, 0.05, 0.1, 0.15, 0.2, 0.25]
@@ -81,12 +74,12 @@ class VgEvalCap:
           model_caption_locations = res[imgId]
           gt_caption_locations = gts[imgId]
           #should be sorted in advance
-          model_caption_locations.sort(key=lambda x:x['log_prob'])
-          new_matrix = calculate_overlap_matrix(model_caption_locations, gt_caption_locations)
+          #model_caption_locations.sort(key=lambda x:-x['log_prob'])
+          new_matrix = self.calculate_overlap_matrix(model_caption_locations, gt_caption_locations)
           overlap_matrices[imgId] = new_matrix
         for rid, overlap_r in enumerate(overlap_ratios):
-          gts_match = []
-          res_match = []
+          gts_match = {}
+          res_match = {}
           
           for imgId in imgIds:
             #i = imgId
@@ -95,14 +88,18 @@ class VgEvalCap:
             match_ids = self.bbox_match(overlap_matrices[imgId], overlap_r)
             for j, match_id in enumerate(match_ids):
               if match_id > -1:
-                gts_match.append(gts[imgId][match_id]['caption_tokens'])
-                res_match.append(res_tokens[imgId][j])
-            score, scores = scorer.compute_score(gts_match, res_match)
-            all_scores = list(itertools.chain(*scores))
-            all_scores = np.array(all_scores)
-            for th_id, score_th in enumerate(metoer_score_th):
-              correct_n = np.sum(all_scores > score_th)
-              score_matrix[rid, th_id] = float(correct_n) / gt_region_n
+                key = '%d_%d' % (imgId, match_id)
+                gts_match[key] = gts[imgId][match_id]['caption_tokens']
+                res_match[key] = [res_tokens[imgId][j]]
+                #assert(len(res_match[key])==1)
+            if gts_match:
+	      
+	      score, scores = Meteor().compute_score(gts_match, res_match)
+              #all_scores = list(itertools.chain(*scores))
+              all_scores = np.array(scores)
+              for th_id, score_th in enumerate(metoer_score_th):
+                correct_n = np.sum(all_scores > score_th)
+                score_matrix[rid, th_id] = float(correct_n) / gt_region_n
         mean_ap = np.mean(score_matrix) 
         print "mean average precision is %0.3f" % mean_ap
     def calculate_overlap_matrix(self, model_caption_locations, gt_caption_locations):
@@ -113,7 +110,7 @@ class VgEvalCap:
       gt_bboxes = np.array([x['location'] for x in gt_caption_locations])
       #area, intersection area, union area
       model_bbox_areas = (model_bboxes[:,2] - model_bboxes[:,0]) * \
-        (gt_bboxes[:, 3] - gt_bboxes[:, 1])
+        (model_bboxes[:, 3] - model_bboxes[:, 1])
       gt_bbox_areas = (gt_bboxes[:,2] - gt_bboxes[:,0]) * \
         (gt_bboxes[:, 3] - gt_bboxes[:, 1])
       x_a1 = model_bboxes[:,0].reshape(model_region_n,1)
@@ -124,8 +121,8 @@ class VgEvalCap:
       y_a2 = model_bboxes[:,3].reshape(model_region_n,1)
       y_b1 = gt_bboxes[:,1].reshape(1,gt_region_n)
       y_b2 = gt_bboxes[:,3].reshape(1,gt_region_n)
-      bbox_pair_x_diff = np.maximum(0, np.maximum(x_a2, x_b2) - np.minimum(x_a1, x_b1))
-      bbox_pair_y_diff = np.maximum(0, np.maximum(y_a2, y_b2) - np.minimum(y_a1, y_b1))
+      bbox_pair_x_diff = np.maximum(0, np.minimum(x_a2, x_b2) - np.maximum(x_a1, x_b1))
+      bbox_pair_y_diff = np.maximum(0, np.minimum(y_a2, y_b2) - np.maximum(y_a1, y_b1))
       inter_areas = bbox_pair_x_diff * bbox_pair_y_diff
       #IoU
       union_areas =  model_bbox_areas.reshape(model_region_n,1) + gt_bbox_areas.reshape(1,gt_region_n)
@@ -138,8 +135,8 @@ class VgEvalCap:
       model_n = overlap_matrix.shape[0]
       gt_n = overlap_matrix.shape[1]
       
-      gt_flag = np.ones((gt_n),dtype=int32)
-      match_ids = -1 * np.ones((model_n),dtype=int32) 
+      gt_flag = np.ones((gt_n),dtype=np.int32)
+      match_ids = -1 * np.ones((model_n),dtype=np.int32) 
       for i in xrange(model_n):
         overlap_step = overlap_matrix[i,:] * gt_flag 
         max_overlap_id = np.argmax(overlap_step)

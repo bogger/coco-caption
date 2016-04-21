@@ -41,7 +41,9 @@ class Meteor:
         self.meteor_p.stdin.write('{}\n'.format(eval_line))
         for i in range(0,len(imgIds)):
             scores.append(float(self.meteor_p.stdout.readline().strip()))
-        score = float(self.meteor_p.stdout.readline().strip())
+        final_score = self.meteor_p.stdout.readline().strip()
+	#print final_score
+	score = float(final_score)
         self.lock.release()
 
         return score, scores

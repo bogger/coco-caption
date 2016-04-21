@@ -2,7 +2,7 @@
 
 # Python wrapper for METEOR implementation, by Xinlei Chen
 # Acknowledge Michael Denkowski for the generous discussion and help 
-
+# Adapted version of meteor.py, to be used by multi-to-multi caption matching in DenseCap.
 import os
 import sys
 import subprocess
@@ -11,7 +11,7 @@ import threading
 # Assumes meteor-1.5.jar is in the same directory as meteor.py.  Change as needed.
 METEOR_JAR = 'meteor-1.5.jar'
 # print METEOR_JAR
-class Meteor:
+class Meteor2:
 
     def __init__(self):
         self.meteor_cmd = ['java', '-jar', '-Xmx2G', METEOR_JAR, \
