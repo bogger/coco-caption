@@ -2,8 +2,8 @@ __author__ = 'ljyang'
 from tokenizer.ptbtokenizer import PTBTokenizer
 import itertools
 import numpy as np
+import pprint
 #from bleu.bleu import Bleu
-from meteor.meteor2 import Meteor2
 from meteor.meteor import Meteor
 #from rouge.rouge import Rouge
 #from cider.cider import Cider
@@ -54,54 +54,77 @@ class VgEvalCap:
         # =================================================
         # Compute scores
         # =================================================
-        #holistic score
+        # Holistic score, as in DenseCap paper: multi-to-multi matching
         eval = {}
         
         print 'computing Meteor score...'
-        score, scores = Meteor2().compute_score(gts_tokens, res_tokens)
+        score, scores = Meteor().compute_score_m2m(gts_tokens, res_tokens)
         #self.setEval(score, method)
         #self.setImgToEvalImgs(scores, imgIds, method)
         print "Meteor: %0.3f"%(score)
         #self.setEvalImgs()
-        #mean ap
+        # mean ap settings, as in DenseCap paper
         overlap_ratios = [0.3,0.4,0.5,0.6,0.7]
         metoer_score_th = [0, 0.05, 0.1, 0.15, 0.2, 0.25]
-        score_matrix = np.zeros((len(overlap_ratios), len(metoer_score_th)))
+        ap_matrix = np.zeros((len(overlap_ratios), len(metoer_score_th)))
         gt_region_n = sum([len(gts[imgId]) for imgId in imgIds])
         #calculate the nxm bbox overlap in one pass
-        overlap_matrices = {}
+        #overlap_matrices = {}
+        eval_stats = {}
+        #gts_match = {}
+        #res_match = {}
         for imgId in imgIds:
           model_caption_locations = res[imgId]
           gt_caption_locations = gts[imgId]
-          #should be sorted in advance
+          #should be sorted using logprob in advance
           #model_caption_locations.sort(key=lambda x:-x['log_prob'])
-          new_matrix = self.calculate_overlap_matrix(model_caption_locations, gt_caption_locations)
-          overlap_matrices[imgId] = new_matrix
-        for rid, overlap_r in enumerate(overlap_ratios):
-          gts_match = {}
-          res_match = {}
+          ov_matrix = self.calculate_overlap_matrix(model_caption_locations, gt_caption_locations)
+          #overlap_matrices[imgId] = new_matrix
+          match_ids, match_ratios = self.bbox_match(ov_matrix)
+          logprobs = np.array([x['log_prob'] for x in model_caption_locations])
+          scores = np.zeros((len(res[imgId])))
+          for j,match_id in enumerate(match_ids):
+            if match_id > -1:
+              #key = '%d_%d' % (imgId, match_id)
+              gt_captions = gts[imgId][match_id]['caption_tokens']
+              res_caption = res_tokens[imgId][j]
+              scores[j] = Meteor().score(res_caption, gt_captions)
+            
+              
+          eval_stats[imgId] = {'match_ids': match_ids, 'match_ratios': match_ratios, 'logprobs': logprobs,'meteor_scores':scores}
           
-          for imgId in imgIds:
-            #i = imgId
+        all_match_ratios = np.concatenate([v['match_ratios'] for k,v in eval_stats.iteritems()])
+        all_logprobs = np.concatenate([v['logprobs'] for k,v in eval_stats.iteritems()])
+        all_scores = np.concatenate([v['meteor_scores'] for k,v in eval_stats.iteritems()])
+        logprob_order = np.argsort(all_logprobs)[::-1]
+        #all_logprobs = all_logprobs[logprob_order]
+        all_match_ratios = all_match_ratios[logprob_order]
+        all_scores = all_scores[logprob_order]
+      
 
-            #find the match ids of predictions to gt bboxes
-            match_ids = self.bbox_match(overlap_matrices[imgId], overlap_r)
-            for j, match_id in enumerate(match_ids):
-              if match_id > -1:
-                key = '%d_%d' % (imgId, match_id)
-                gts_match[key] = gts[imgId][match_id]['caption_tokens']
-                res_match[key] = [res_tokens[imgId][j]]
-                #assert(len(res_match[key])==1)
-            if gts_match:
-	      
-	      score, scores = Meteor().compute_score(gts_match, res_match)
-              #all_scores = list(itertools.chain(*scores))
-              all_scores = np.array(scores)
-              for th_id, score_th in enumerate(metoer_score_th):
-                correct_n = np.sum(all_scores > score_th)
-                score_matrix[rid, th_id] = float(correct_n) / gt_region_n
-        mean_ap = np.mean(score_matrix) 
+        for rid, overlap_r in enumerate(overlap_ratios):
+          for th_id, score_th in enumerate(metoer_score_th):
+            # compute AP for each setting
+            tp = (all_match_ratios > overlap_r) & (all_scores > score_th)
+            fp = 1 - tp
+            tp = tp.cumsum()
+            fp = fp.cumsum()
+            rec = tp / gt_region_n
+            prec = tp / (fp + tp)
+            ap = 0
+            all_t = np.linspace(0,1,100)
+            apn = len(all_t)
+            for t in all_t:
+              mask = rec > t
+              p = np.max(prec * mask)
+              ap += p
+            ap_matrix[rid, th_id] = ap / apn
+   
+        mean_ap = np.mean(ap_matrix) 
+        print 'ap matrix'
+        print ap_matrix
         print "mean average precision is %0.3f" % mean_ap
+        
     def calculate_overlap_matrix(self, model_caption_locations, gt_caption_locations):
       model_region_n = len(model_caption_locations)
       gt_region_n = len(gt_caption_locations)
@@ -129,24 +152,27 @@ class VgEvalCap:
       overlap_matrix = inter_areas / (union_areas - inter_areas)
       return overlap_matrix
 
-    def bbox_match(self, overlap_matrix, overlap):
-      assert(1 > overlap >= 0)
+    def bbox_match(self, overlap_matrix):
+      # greedy matching of candiate bboxes to gt bboxes
+      #assert(1 > overlap >= 0)
       
       model_n = overlap_matrix.shape[0]
       gt_n = overlap_matrix.shape[1]
       
       gt_flag = np.ones((gt_n),dtype=np.int32)
       match_ids = -1 * np.ones((model_n),dtype=np.int32) 
+      match_ratios = np.zeros((model_n))
       for i in xrange(model_n):
         overlap_step = overlap_matrix[i,:] * gt_flag 
         max_overlap_id = np.argmax(overlap_step)
-        if overlap_step[max_overlap_id] > overlap:
+        if overlap_step[max_overlap_id] > 0:
           gt_flag[max_overlap_id] = 0
+          match_ratios[i] = overlap_step[max_overlap_id]
           match_ids[i] = max_overlap_id
         else:
           pass
 
-      return match_ids
+      return match_ids, match_ratios
 
     def setEval(self, score, method):
         self.eval[method] = score

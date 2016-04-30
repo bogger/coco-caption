@@ -42,12 +42,35 @@ class Meteor:
         for i in range(0,len(imgIds)):
             scores.append(float(self.meteor_p.stdout.readline().strip()))
         final_score = self.meteor_p.stdout.readline().strip()
-	#print final_score
-	score = float(final_score)
+        #print final_score
+        score = float(final_score)
         self.lock.release()
 
         return score, scores
+    def compute_score_m2m(self, gts, res):
+        assert(gts.keys() == res.keys())
+        imgIds = gts.keys()
+        scores = []
 
+        eval_line = 'EVAL'
+        self.lock.acquire()
+        tot_line = 0
+        for i in imgIds:
+            #assert(len(res[i]) == 1)
+            for res_sent in res[i]:
+                stat = self._stat(res_sent, gts[i])
+                eval_line += ' ||| {}'.format(stat)
+                tot_line += 1
+        self.meteor_p.stdin.write('{}\n'.format(eval_line))
+        for i in range(0,len(imgIds)):
+            scores_im = []
+            for j in xrange(len(res[i])):
+                scores_im.append(float(self.meteor_p.stdout.readline().strip()))
+            scores.append(scores_im)
+        score = float(self.meteor_p.stdout.readline().strip())
+        self.lock.release()
+
+        return score, scores
     def method(self):
         return "METEOR"
 
@@ -58,7 +81,7 @@ class Meteor:
         self.meteor_p.stdin.write('{}\n'.format(score_line))
         return self.meteor_p.stdout.readline().strip()
 
-    def _score(self, hypothesis_str, reference_list):
+    def score(self, hypothesis_str, reference_list):
         self.lock.acquire()
         # SCORE ||| reference 1 words ||| reference n words ||| hypothesis words
         hypothesis_str = hypothesis_str.replace('|||','').replace('  ',' ')
