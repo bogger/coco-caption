@@ -25,9 +25,10 @@ class Meteor:
         # Used to guarantee thread safety
         self.lock = threading.Lock()
 
-    def compute_score(self, gts, res):
+    def compute_score(self, gts, res, imgIds=None):
         assert(gts.keys() == res.keys())
-        imgIds = gts.keys()
+        if imgIds is None:
+            imgIds = gts.keys()
         scores = []
 
         eval_line = 'EVAL'
@@ -47,9 +48,12 @@ class Meteor:
         self.lock.release()
 
         return score, scores
-    def compute_score_m2m(self, gts, res):
+
+
+    def compute_score_m2m(self, gts, res, imgIds=None):
         assert(gts.keys() == res.keys())
-        imgIds = gts.keys()
+        if imgIds is None:
+            imgIds = gts.keys()
         scores = []
 
         eval_line = 'EVAL'

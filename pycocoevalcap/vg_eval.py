@@ -3,6 +3,7 @@ from tokenizer.ptbtokenizer import PTBTokenizer
 import itertools
 import numpy as np
 import pprint
+import time
 #from bleu.bleu import Bleu
 from meteor.meteor import Meteor
 #from rouge.rouge import Rouge
@@ -71,35 +72,46 @@ class VgEvalCap:
         #calculate the nxm bbox overlap in one pass
         #overlap_matrices = {}
         eval_stats = {}
-        #gts_match = {}
-        #res_match = {}
+        gts_tokens_match = {}
+        res_tokens_match = {}
+        all_keys = []
+        t1 = time.time()
         for imgId in imgIds:
           model_caption_locations = res[imgId]
           gt_caption_locations = gts[imgId]
-          #should be sorted using logprob in advance
+          #should be sorted using predicted prob in advance
           #model_caption_locations.sort(key=lambda x:-x['log_prob'])
           ov_matrix = self.calculate_overlap_matrix(model_caption_locations, gt_caption_locations)
-          #overlap_matrices[imgId] = new_matrix
-          match_ids, match_ratios = self.bbox_match(ov_matrix)
-          logprobs = np.array([x['log_prob'] for x in model_caption_locations])
+          match_gt_ids, match_ratios = self.bbox_match(ov_matrix)
+          probs = np.array([x['prob'] for x in model_caption_locations])
           scores = np.zeros((len(res[imgId])))
-          for j,match_id in enumerate(match_ids):
-            if match_id > -1:
-              #key = '%d_%d' % (imgId, match_id)
-              gt_captions = gts[imgId][match_id]['caption_tokens']
-              res_caption = res_tokens[imgId][j]
-              scores[j] = Meteor().score(res_caption, gt_captions)
+          match_model_ids = np.where(match_gt_ids > -1)[0]
+          match_pairs = zip(match_model_ids, match_gt_ids[match_model_ids])
+        
+          for model_id, gt_id in match_pairs:
+            key = (imgId, model_id)
+            all_keys.append(key)
+            gts_tokens_match[key] = gts[imgId][gt_id]['caption_tokens']
+            res_tokens_match[key] = [res_tokens[imgId][model_id]]
+          #assert(gts_tokens_match.keys() == match_model_ids.tolist())
+          #score_match, scores_match = Meteor().compute_score(gts_tokens_match, res_tokens_match)
+          #scores[match_model_ids] = scores_match
             
               
-          eval_stats[imgId] = {'match_ids': match_ids, 'match_ratios': match_ratios, 'logprobs': logprobs,'meteor_scores':scores}
-          
+          eval_stats[imgId] = {'match_ids': match_gt_ids, 'match_ratios': match_ratios, 'probs': probs, 'meteor_scores': scores}
+        #compute meteor scores of matched regions in one pass
+        score_match, scores_match = Meteor().compute_score(gts_tokens_match, res_tokens_match, imgIds=all_keys)
+        for key, score in zip(all_keys, scores_match):
+          eval_stats[key[0]]['meteor_scores'][key[1]] = score
+        t2 = time.time()
+        print 'caption scoring finished, takes %f seconds' % (t2-t1)
+
         all_match_ratios = np.concatenate([v['match_ratios'] for k,v in eval_stats.iteritems()])
-        all_logprobs = np.concatenate([v['logprobs'] for k,v in eval_stats.iteritems()])
+        all_probs = np.concatenate([v['probs'] for k,v in eval_stats.iteritems()])
         all_scores = np.concatenate([v['meteor_scores'] for k,v in eval_stats.iteritems()])
-        logprob_order = np.argsort(all_logprobs)[::-1]
-        #all_logprobs = all_logprobs[logprob_order]
-        all_match_ratios = all_match_ratios[logprob_order]
-        all_scores = all_scores[logprob_order]
+        prob_order = np.argsort(all_probs)[::-1]
+        all_match_ratios = all_match_ratios[prob_order]
+        all_scores = all_scores[prob_order]
       
 
         for rid, overlap_r in enumerate(overlap_ratios):
@@ -107,8 +119,8 @@ class VgEvalCap:
             # compute AP for each setting
             tp = (all_match_ratios > overlap_r) & (all_scores > score_th)
             fp = 1 - tp
-            tp = tp.cumsum()
-            fp = fp.cumsum()
+            tp = tp.cumsum().astype(np.float32)
+            fp = fp.cumsum().astype(np.float32)
             rec = tp / gt_region_n
             prec = tp / (fp + tp)
             ap = 0
@@ -119,8 +131,9 @@ class VgEvalCap:
               p = np.max(prec * mask)
               ap += p
             ap_matrix[rid, th_id] = ap / apn
-   
-        mean_ap = np.mean(ap_matrix) 
+        t3 = time.time()
+        print 'mean ap computing finished, takes %f seconds' % (t3 - t2)
+        mean_ap = np.mean(ap_matrix) * 100 # percent
         print 'ap matrix'
         print ap_matrix
         print "mean average precision is %0.3f" % mean_ap
